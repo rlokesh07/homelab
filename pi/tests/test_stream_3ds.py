@@ -2,6 +2,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -88,6 +89,26 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(kodi.device, DEFAULT)
         self.assertFalse(state.streaming)
         self.assertEqual(state.offset, 0.0)
+
+    def test_gives_up_on_a_silent_3ds_even_if_the_recorder_ignores_sigterm(self):
+        kodi = FakeKodi()
+        timeout = stream_3ds.CLIENT_TIMEOUT
+        stream_3ds.CLIENT_TIMEOUT = 0.5
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                state = stream_3ds.State(Path(tmp) / "dirty.json")
+                server_side, client = socket.socketpair()
+                client.sendall(b"delay 100\n")  # then never reads or writes again
+                start = time.monotonic()
+                stream_3ds.run_session(
+                    server_side, kodi, state, recorder=["sh", "-c", "trap '' TERM; cat /dev/zero"]
+                )
+                elapsed = time.monotonic() - start
+                client.close()
+        finally:
+            stream_3ds.CLIENT_TIMEOUT = timeout
+        self.assertLess(elapsed, 4)
+        self.assertEqual(kodi.device, DEFAULT)
 
     def test_restores_default_if_left_on_the_sink(self):
         kodi = FakeKodi(device=SINK)

@@ -126,11 +126,15 @@ def sync_offset(kodi, state):
 
 
 def keep_offsets(kodi, state):
+    last_error = None
     while True:
         try:
             sync_offset(kodi, state)
+            last_error = None
         except (OSError, KodiError, KeyError) as e:
-            print(f"offset sync: {e}")
+            if str(e) != last_error:
+                print(f"offset sync: {e}")
+            last_error = str(e)
         time.sleep(1)
 
 
@@ -173,8 +177,14 @@ def run_session(client, kodi, state, recorder=RECORDER):
     except OSError:
         pass
     finally:
+        # pw-record ignores SIGTERM while blocked writing to a full pipe; closing the pipe unblocks it.
         process.terminate()
-        process.wait()
+        process.stdout.close()
+        try:
+            process.wait(2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         client.close()
         with state.lock:
             state.streaming = False
