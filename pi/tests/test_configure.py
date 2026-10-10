@@ -45,13 +45,23 @@ class GuiSettingsTest(unittest.TestCase):
                 '<setting id="services.zeroconf" default="true">true</setting>'
                 "</settings>"
             )
-            configure.set_gui_settings(path)
+            configure.set_gui_settings(configure.GUI_SETTINGS, path)
             root = ET.parse(path).getroot()
 
         zeroconf = root.find("setting[@id='services.zeroconf']")
         self.assertEqual(zeroconf.text, "false")
         self.assertNotIn("default", zeroconf.attrib)
         self.assertEqual(root.find("setting[@id='lookandfeel.skin']").text, configure.SKIN_ID)
+
+
+class WebPasswordTest(unittest.TestCase):
+    def test_generated_once_and_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "homelab" / "kodi-web-password"
+            first = configure.web_password(path)
+            self.assertGreaterEqual(len(first), 16)
+            self.assertEqual(configure.web_password(path), first)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Sets Kodi up as a movies + TV shows box. Run as the Kodi user while Kodi is stopped."""
 import re
+import secrets
 import shutil
 import sqlite3
 import xml.etree.ElementTree as ET
@@ -26,7 +27,14 @@ GUI_SETTINGS = {
     "services.zeroconf": "false",
     "services.esenabled": "false",
     "services.wsdiscovery": "false",
+    # JSON-RPC over HTTP, used by the 3DS remote.
+    "services.webserver": "true",
+    "services.webserverport": "8080",
+    "services.webserverauthentication": "true",
+    "services.webserverusername": "kodi",
 }
+# Generated on the Pi so the password stays out of this (public) repo.
+WEB_PASSWORD = Path.home() / ".config" / "homelab" / "kodi-web-password"
 
 # Downloaded copies in ~/.kodi/addons. Kodi's built-in add-ons can't be disabled (it re-enables
 # everything in addon-manifest.xml), but they only load when their feature is used.
@@ -72,10 +80,18 @@ def trim_home(tree):
             parents[group].remove(group)
 
 
-def set_gui_settings(path=USERDATA / "guisettings.xml"):
+def web_password(path=WEB_PASSWORD):
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(mode=0o600)
+        path.write_text(secrets.token_urlsafe(16) + "\n")
+    return path.read_text().strip()
+
+
+def set_gui_settings(settings, path=USERDATA / "guisettings.xml"):
     tree = ET.parse(path)
     root = tree.getroot()
-    for key, value in GUI_SETTINGS.items():
+    for key, value in settings.items():
         setting = root.find(f"setting[@id='{key}']")
         if setting is None:
             setting = ET.SubElement(root, "setting", id=key)
@@ -133,7 +149,7 @@ def set_addons():
 
 if __name__ == "__main__":
     build_skin()
-    set_gui_settings()
+    set_gui_settings({**GUI_SETTINGS, "services.webserverpassword": web_password()})
     write_sources()
     set_library_content()
     set_addons()
