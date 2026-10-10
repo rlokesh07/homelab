@@ -14,10 +14,15 @@ SKIN_ID = "skin.estuary.tv"
 SKIN_DIR = KODI / "addons" / SKIN_ID
 KEEP_MENU = {"movies", "tvshows"}
 
-MEDIA = "/srv/media"
+USB_DRIVE = "/srv/media"
+STORAGE = "/mnt/storage"
+MOVIES = ("movies", "metadata.themoviedb.org.python", 2147483647)
+TV_SHOWS = ("tvshows", "metadata.tvshows.themoviedb.org.python", 0)
 SOURCES = {
-    "Movies": (f"{MEDIA}/Movies/", "movies", "metadata.themoviedb.org.python", 2147483647),
-    "TV Shows": (f"{MEDIA}/TV Shows/", "tvshows", "metadata.tvshows.themoviedb.org.python", 0),
+    "Movies": (f"{USB_DRIVE}/Movies/", *MOVIES),
+    "TV Shows": (f"{USB_DRIVE}/TV Shows/", *TV_SHOWS),
+    "Movies (storage)": (f"{STORAGE}/Movies/", *MOVIES),
+    "TV Shows (storage)": (f"{STORAGE}/TV Shows/", *TV_SHOWS),
 }
 
 GUI_SETTINGS = {

@@ -6,7 +6,8 @@ cd "$(dirname "$0")"
 USER_NAME=alarcafil
 KEEP="kodi kodi-bin kodi-data kodi-repository-kodi openssh-server network-manager wpasupplicant
 bluez pipewire pipewire-pulse pipewire-alsa wireplumber libspa-0.2-bluetooth p11-kit p11-kit-modules
-rsync git curl avahi-daemon cron sudo raspi-config raspi-firmware linux-image-rpi-v8 raspberrypi-sys-mods"
+rsync git curl avahi-daemon cron sudo raspi-config raspi-firmware linux-image-rpi-v8 raspberrypi-sys-mods
+samba sshfs"
 
 installed() {
     for p in "$@"; do
@@ -16,7 +17,8 @@ installed() {
 
 echo "== packages"
 apt-get update -q
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q kodi rsync git curl
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q kodi rsync git curl sshfs
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends samba
 # shellcheck disable=SC2046,SC2086
 apt-mark manual $(installed $KEEP) >/dev/null
 
@@ -45,6 +47,16 @@ fi
 systemctl daemon-reload
 udevadm control --reload
 udevadm trigger --action=add --subsystem-match=block
+
+echo "== file sharing (smb://<pi>/storage)"
+install -m 644 samba/smb.conf /etc/samba/smb.conf
+systemctl disable --now nmbd.service 2>/dev/null || true
+systemctl enable smbd.service
+systemctl restart smbd.service
+# /mnt/storage is the Ubuntu machine over sshfs; skip if it is switched off.
+if ! timeout 20 runuser -u "$USER_NAME" -- mkdir -p /mnt/storage/Movies "/mnt/storage/TV Shows"; then
+    echo "storage not reachable, skipped creating Movies and TV Shows folders"
+fi
 
 echo "== kodi"
 install -m 644 kodi/kodi.service /etc/systemd/system/kodi.service
