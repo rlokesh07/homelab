@@ -58,6 +58,20 @@ if ! timeout 20 runuser -u "$USER_NAME" -- mkdir -p /mnt/storage/Movies "/mnt/st
     echo "storage not reachable, skipped creating Movies and TV Shows folders"
 fi
 
+echo "== 3ds audio"
+SINK_CONF=/etc/pipewire/pipewire.conf.d/90-3ds-sink.conf
+if ! cmp -s audio/90-3ds-sink.conf "$SINK_CONF"; then
+    install -D -m 644 audio/90-3ds-sink.conf "$SINK_CONF"
+    # Kodi is restarted below, so it picks up the new sink.
+    runuser -u "$USER_NAME" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$USER_NAME")" \
+        systemctl --user restart pipewire.service
+fi
+install -m 755 audio/stream_3ds.py /usr/local/bin/stream-3ds
+install -m 644 audio/stream-3ds.service /etc/systemd/system/stream-3ds.service
+systemctl daemon-reload
+systemctl enable stream-3ds.service
+systemctl restart stream-3ds.service
+
 echo "== kodi"
 install -m 644 kodi/kodi.service /etc/systemd/system/kodi.service
 systemctl daemon-reload

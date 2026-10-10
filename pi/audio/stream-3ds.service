@@ -1,0 +1,13 @@
+[Unit]
+Description=Stream Kodi's audio to the 3DS remote
+After=kodi.service
+
+[Service]
+User=alarcafil
+Environment=XDG_RUNTIME_DIR=/run/user/1000 PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/stream-3ds
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
