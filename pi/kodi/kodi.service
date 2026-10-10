@@ -1,0 +1,20 @@
+[Unit]
+Description=Kodi on the TV (HDMI)
+After=network-online.target sound.target systemd-user-sessions.service
+Wants=network-online.target
+Conflicts=getty@tty1.service
+
+[Service]
+User=alarcafil
+Group=alarcafil
+SupplementaryGroups=audio video input render
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+ExecStart=/usr/bin/kodi --standalone --windowing=gbm
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+# Any USB filesystem triggers media-mount@<dev>.service; the script skips the boot drive.
+ACTION!="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", TAG+="systemd", ENV{SYSTEMD_WANTS}+="media-mount@%k.service"

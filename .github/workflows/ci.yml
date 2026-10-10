@@ -1,0 +1,33 @@
+name: CI
+
+# The Pi deploys a commit on main only after every check run on it has passed (pi/update/homelab-update).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    env:
+      KODI_TAG: 21.3-Omega
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell scripts
+        run: shellcheck pi/install.sh pi/deploy.sh pi/drive/media-mount pi/update/homelab-update
+
+      - name: udev rule
+        run: udevadm verify pi/drive/90-media-drive.rules
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Fetch Kodi's Estuary home screen
+        run: curl -fsSL -o "$RUNNER_TEMP/Home.xml" "https://raw.githubusercontent.com/xbmc/xbmc/$KODI_TAG/addons/skin.estuary/xml/Home.xml"
+
+      - name: Tests
+        env:
+          ESTUARY_HOME: ${{ runner.temp }}/Home.xml
+        run: python -m unittest discover -s pi/tests -v

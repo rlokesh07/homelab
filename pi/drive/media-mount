@@ -1,0 +1,59 @@
+#!/bin/sh
+# Mounts the first external USB drive at /srv/media, ignoring the boot drive.
+# Usage: media-mount mount|unmount <kernel device name, e.g. sdb1>
+set -eu
+
+MOUNT_POINT=/srv/media
+OWNER=alarcafil
+
+action=$1
+name=$2
+dev=/dev/$name
+
+case $action in
+mount)
+    root_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+    disk=$(lsblk -no PKNAME "$dev")
+    [ -n "$disk" ] || disk=$name
+
+    if [ "$disk" = "$root_disk" ]; then
+        echo "$dev is on the boot drive, ignoring"
+        exit 0
+    fi
+    if mountpoint -q "$MOUNT_POINT"; then
+        echo "$MOUNT_POINT already holds $(findmnt -no SOURCE "$MOUNT_POINT"), ignoring $dev"
+        exit 0
+    fi
+
+    fstype=$(blkid -o value -s TYPE "$dev")
+    owner_opts="uid=$(id -u "$OWNER"),gid=$(id -g "$OWNER"),umask=022"
+    case $fstype in
+        ext4|ext3|ext2|btrfs|xfs) opts=noatime ;;
+        exfat|vfat) opts="noatime,$owner_opts" ;;
+        ntfs) fstype=ntfs3; opts="noatime,$owner_opts" ;;
+        *)
+            echo "unsupported filesystem '$fstype' on $dev, ignoring"
+            exit 0
+            ;;
+    esac
+
+    mount -t "$fstype" -o "$opts" "$dev" "$MOUNT_POINT"
+    echo "mounted $dev ($fstype) at $MOUNT_POINT"
+
+    for dir in Movies "TV Shows"; do
+        [ -d "$MOUNT_POINT/$dir" ] || install -d -o "$OWNER" -g "$OWNER" "$MOUNT_POINT/$dir" 2>/dev/null || true
+    done
+    # Kodi scans its library on startup, so restart it to pick up the new drive.
+    systemctl --no-block try-restart kodi.service
+    ;;
+unmount)
+    if [ "$(findmnt -no SOURCE "$MOUNT_POINT" || true)" = "$dev" ]; then
+        umount -l "$MOUNT_POINT"
+        echo "unmounted $dev from $MOUNT_POINT"
+    fi
+    ;;
+*)
+    echo "usage: $0 mount|unmount <device>" >&2
+    exit 2
+    ;;
+esac

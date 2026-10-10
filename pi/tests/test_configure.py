@@ -1,0 +1,58 @@
+import os
+import re
+import sys
+import tempfile
+import unittest
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "kodi"))
+import configure  # noqa: E402
+
+ESTUARY_HOME = os.environ.get("ESTUARY_HOME")
+
+
+@unittest.skipUnless(ESTUARY_HOME, "set ESTUARY_HOME to Estuary's xml/Home.xml")
+class TrimHomeTest(unittest.TestCase):
+    def setUp(self):
+        self.tree = ET.parse(ESTUARY_HOME)
+        configure.trim_home(self.tree)
+
+    def test_menu_only_has_movies_and_tv_shows(self):
+        menu = self.tree.find(".//control[@id='9000']/content")
+        ids = [item.find("property[@name='id']").text for item in menu]
+        self.assertEqual(ids, ["movies", "tvshows"])
+
+    def test_panels_for_removed_entries_are_gone(self):
+        shown_for = set()
+        for visible in self.tree.iter("visible"):
+            match = configure.MENU_ITEM_ID.fullmatch((visible.text or "").strip())
+            if match:
+                shown_for.add(match.group(1))
+        self.assertEqual(shown_for, {"movies", "tvshows"})
+
+    def test_untrimmed_file_has_other_entries(self):
+        text = Path(ESTUARY_HOME).read_text()
+        self.assertTrue({"music", "pictures", "weather"} <= set(re.findall(r'"id">(\w+)<', text)))
+
+
+class GuiSettingsTest(unittest.TestCase):
+    def test_overrides_defaults_and_adds_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guisettings.xml"
+            path.write_text(
+                '<settings version="2">'
+                '<setting id="services.zeroconf" default="true">true</setting>'
+                "</settings>"
+            )
+            configure.set_gui_settings(path)
+            root = ET.parse(path).getroot()
+
+        zeroconf = root.find("setting[@id='services.zeroconf']")
+        self.assertEqual(zeroconf.text, "false")
+        self.assertNotIn("default", zeroconf.attrib)
+        self.assertEqual(root.find("setting[@id='lookandfeel.skin']").text, configure.SKIN_ID)
+
+
+if __name__ == "__main__":
+    unittest.main()

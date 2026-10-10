@@ -1,0 +1,51 @@
+#!/bin/sh
+# Deploys the latest commit on main once all of its GitHub checks have passed.
+# Run by homelab-update.timer; each commit is attempted once.
+set -eu
+
+REPO=rlokesh07/homelab
+BRANCH=main
+DIR=/opt/homelab
+STATE=/var/lib/homelab/deployed
+
+if [ ! -d "$DIR/.git" ]; then
+    git clone --quiet --branch "$BRANCH" "https://github.com/$REPO.git" "$DIR"
+fi
+git -C "$DIR" fetch --quiet origin "$BRANCH"
+latest=$(git -C "$DIR" rev-parse FETCH_HEAD)
+
+if [ "$latest" = "$(cat "$STATE" 2>/dev/null || true)" ]; then
+    exit 0
+fi
+
+checks=$(curl -fsS -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$REPO/commits/$latest/check-runs" | python3 -c '
+import json, sys
+runs = json.load(sys.stdin)["check_runs"]
+if not runs or any(r["status"] != "completed" for r in runs):
+    print("pending")
+elif all(r["conclusion"] in ("success", "skipped", "neutral") for r in runs):
+    print("success")
+else:
+    print("failure")
+')
+
+case $checks in
+pending)
+    echo "checks still running on $latest"
+    exit 0
+    ;;
+failure)
+    echo "checks failed on $latest, not deploying"
+    mkdir -p "$(dirname "$STATE")"
+    echo "$latest" > "$STATE"
+    exit 0
+    ;;
+esac
+
+echo "deploying $latest"
+git -C "$DIR" reset --quiet --hard "$latest"
+mkdir -p "$(dirname "$STATE")"
+echo "$latest" > "$STATE"
+sh "$DIR/pi/install.sh"
+echo "deployed $latest"
