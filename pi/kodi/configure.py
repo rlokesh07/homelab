@@ -70,6 +70,12 @@ def build_skin():
     trim_home(tree)
     tree.write(home_xml, encoding="UTF-8", xml_declaration=True)
 
+    # Bigger notification card so doorbell snapshots can sit over playing video.
+    for name in ("DialogNotification.xml", "Custom_1197_Doorbell.xml"):
+        src = Path(__file__).with_name(name)
+        if src.exists():
+            shutil.copy2(src, SKIN_DIR / "xml" / name)
+
 
 def trim_home(tree):
     """Deletes every home menu entry, and the panel it shows, except those in KEEP_MENU."""

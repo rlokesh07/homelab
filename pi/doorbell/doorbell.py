@@ -16,15 +16,16 @@ from pathlib import Path
 
 CONF = Path.home() / ".config" / "homelab"
 # Nest battery doorbell is WebRTC H.264 + Opus at 960x1280 (portrait). Kodi on this
-# Pi can't play that live, so we show a JPEG ASAP, then a short low-res 16:9 clip.
+# Pi can't play that live. If something is already playing we overlay a large
+# notification with the snapshot (playback continues). Otherwise fullscreen clip.
 NEST_TS = "http://127.0.0.1:1984/api/stream.ts?src=doorbell"
 NEST_JPEG = "http://127.0.0.1:1984/api/frame.jpeg?src=doorbell"
 SNAP = Path.home() / "doorbell.jpg"
 CLIP = Path.home() / "doorbell.mp4"
 KODI_URL = "http://127.0.0.1:8080/jsonrpc"
 KODI_USER = "kodi"
-# Short + small = much faster on the Pi 3. Record and encode overlap via a pipe.
 RECORD_SECONDS = 5
+PIP_SECONDS = 12
 WATCH_SECONDS = 45
 CHIME = "sdm.devices.events.DoorbellChime.Chime"
 log = logging.getLogger("doorbell")
@@ -75,14 +76,30 @@ def active_players() -> list[dict]:
     return kodi("Player.GetActivePlayers").get("result") or []
 
 
-def notify(title: str, message: str) -> None:
-    kodi("GUI.ShowNotification", {"title": title, "message": message, "displaytime": 6000})
+def something_is_playing() -> bool:
+    for player in active_players():
+        if player.get("type") in ("video", "audio"):
+            speed = (
+                kodi("Player.GetProperties", {"playerid": player["playerid"], "properties": ["speed"]})
+                .get("result", {})
+                .get("speed", 0)
+            )
+            if speed:
+                return True
+    return False
+
+
+def notify(title: str, message: str, image: str | None = None, displaytime: int = 6000) -> None:
+    params: dict = {"title": title, "message": message, "displaytime": displaytime}
+    if image:
+        params["image"] = image
+    kodi("GUI.ShowNotification", params)
 
 
 def fetch_snapshot(path: Path) -> None:
     path.unlink(missing_ok=True)
     req = urllib.request.Request(NEST_JPEG, headers={"User-Agent": "homelab-doorbell/1"})
-    with urllib.request.urlopen(req, timeout=20) as src, path.open("wb") as out:
+    with urllib.request.urlopen(req, timeout=25) as src, path.open("wb") as out:
         out.write(src.read())
     if path.stat().st_size < 1000:
         raise RuntimeError("snapshot too small")
@@ -90,7 +107,6 @@ def fetch_snapshot(path: Path) -> None:
 
 
 def record_and_transcode(out: Path) -> None:
-    """Pipe Nest MPEG-TS into ffmpeg so encode overlaps with capture."""
     out.unlink(missing_ok=True)
     ffmpeg = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -108,7 +124,6 @@ def record_and_transcode(out: Path) -> None:
         "-movflags", "+faststart",
         str(out),
     ]
-    # curl exits after RECORD_SECONDS; ffmpeg finishes the encode.
     curl = [
         "curl", "-fsS", "--max-time", str(RECORD_SECONDS + 5),
         "-H", "User-Agent: homelab-doorbell/1",
@@ -129,34 +144,34 @@ def record_and_transcode(out: Path) -> None:
     log.info("clip ready %s (%s bytes)", out, out.stat().st_size)
 
 
-def wait_playback_end(path: Path, timeout: float) -> None:
+def wait_playback_end(timeout: float) -> None:
     deadline = time.time() + timeout
-    # Give Kodi a moment to start the item.
     time.sleep(1)
     while time.time() < deadline:
-        players = active_players()
-        if not players:
+        if not active_players():
             return
         time.sleep(1)
     for player in active_players():
         kodi("Player.Stop", {"playerid": player["playerid"]})
 
 
-def handle_chime() -> None:
-    log.info("doorbell chime")
+def handle_chime_pip() -> None:
+    """Keep current playback going; overlay a large doorbell photo notification."""
+    log.info("doorbell chime (pip)")
+    try:
+        fetch_snapshot(SNAP)
+        # Long displaytime — Estuary shows the image in the notification card.
+        notify("Doorbell", "Someone's at the door", image=str(SNAP), displaytime=PIP_SECONDS * 1000)
+        time.sleep(PIP_SECONDS)
+    except Exception:
+        log.exception("pip doorbell failed")
+        notify("Doorbell", "Someone's at the door — camera unavailable")
+
+
+def handle_chime_fullscreen() -> None:
+    """Nothing else on screen — snapshot, then a short clip."""
+    log.info("doorbell chime (fullscreen)")
     notify("Doorbell", "Someone's at the door")
-    paused = []
-    for player in active_players():
-        pid = player["playerid"]
-        speed = (
-            kodi("Player.GetProperties", {"playerid": pid, "properties": ["speed"]})
-            .get("result", {})
-            .get("speed", 0)
-        )
-        if speed:
-            kodi("Player.PlayPause", {"playerid": pid, "play": False})
-            paused.append(pid)
-            log.info("paused player %s", pid)
 
     clip_error: list[BaseException] = []
 
@@ -182,19 +197,19 @@ def handle_chime() -> None:
     if CLIP.exists() and CLIP.stat().st_size >= 5000 and not clip_error:
         log.info("showing clip")
         kodi("Player.Open", {"item": {"file": str(CLIP)}})
-        wait_playback_end(CLIP, WATCH_SECONDS)
+        wait_playback_end(WATCH_SECONDS)
     elif clip_error:
         notify("Doorbell", "Couldn't get video — showing photo only")
-        wait_playback_end(SNAP, 15)
+        wait_playback_end(15)
     else:
-        wait_playback_end(SNAP, 15)
+        wait_playback_end(15)
 
-    for pid in paused:
-        try:
-            kodi("Player.PlayPause", {"playerid": pid, "play": True})
-            log.info("resumed player %s", pid)
-        except Exception:
-            log.exception("failed to resume player %s", pid)
+
+def handle_chime() -> None:
+    if something_is_playing():
+        handle_chime_pip()
+    else:
+        handle_chime_fullscreen()
 
 
 def decode_event(message: dict) -> dict:

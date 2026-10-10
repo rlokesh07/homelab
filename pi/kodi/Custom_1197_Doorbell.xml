@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Corner overlay while a movie/show keeps playing. Image path is written by doorbell.py. -->
+<window type="dialog" id="1197">
+	<zorder>10</zorder>
+	<controls>
+		<control type="group">
+			<right>36</right>
+			<top>36</top>
+			<width>520</width>
+			<height>420</height>
+			<control type="image">
+				<width>520</width>
+				<height>420</height>
+				<texture>dialogs/dialog-bg-nobo.png</texture>
+				<bordertexture border="21" infill="false">overlays/shadow.png</bordertexture>
+				<bordersize>20</bordersize>
+			</control>
+			<control type="image">
+				<left>20</left>
+				<top>20</top>
+				<width>480</width>
+				<height>340</height>
+				<aspectratio>keep</aspectratio>
+				<texture>/home/alarcafil/doorbell.jpg</texture>
+			</control>
+			<control type="label">
+				<left>20</left>
+				<top>365</top>
+				<width>480</width>
+				<height>40</height>
+				<font>font27</font>
+				<align>center</align>
+				<aligny>center</aligny>
+				<label>Doorbell</label>
+			</control>
+		</control>
+	</controls>
+</window>
