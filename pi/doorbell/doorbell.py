@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import signal
+import subprocess
 import threading
 import time
 import urllib.error
@@ -14,12 +15,16 @@ import urllib.request
 from pathlib import Path
 
 CONF = Path.home() / ".config" / "homelab"
-# Kodi from Debian has no RTSP client. HLS returns a playlist immediately (so Kodi's
-# HEAD/stat succeeds), while go2rtc pulls Nest WebRTC in the background.
-STREAM_URL = "http://127.0.0.1:1984/api/stream.m3u8?src=doorbell"
-WARM_URL = "http://127.0.0.1:1984/api/stream.ts?src=doorbell"
+# Nest battery doorbell is WebRTC H.264 + Opus at 960x1280 (portrait). Kodi on this
+# Pi can't play that live (no RTSP; HLS EOFs; portrait TS fails the DRM renderer),
+# so we record a short clip through go2rtc and re-encode to a 16:9 baseline MP4.
+NEST_TS = "http://127.0.0.1:1984/api/stream.ts?src=doorbell"
+RAW = Path("/tmp/doorbell-raw.ts")
+CLIP = Path.home() / "doorbell.mp4"
 KODI_URL = "http://127.0.0.1:8080/jsonrpc"
 KODI_USER = "kodi"
+RECORD_SECONDS = 10
+MIN_BYTES = 60_000
 WATCH_SECONDS = 90
 CHIME = "sdm.devices.events.DoorbellChime.Chime"
 log = logging.getLogger("doorbell")
@@ -62,7 +67,7 @@ def kodi(method: str, params: dict | None = None) -> dict:
         data=data,
         headers={"Content-Type": "application/json", "Authorization": f"Basic {auth}"},
     )
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
 
 
@@ -74,20 +79,40 @@ def notify(title: str, message: str) -> None:
     kodi("GUI.ShowNotification", {"title": title, "message": message, "displaytime": 8000})
 
 
-def warm_stream() -> None:
-    """Kick Nest awake before Kodi opens the playlist."""
-    try:
-        req = urllib.request.Request(WARM_URL)
-        with urllib.request.urlopen(req, timeout=25) as r:
-            r.read(65536)
-        log.info("nest stream warmed")
-    except Exception:
-        log.exception("stream warm failed; Kodi will still try to open")
+def record_raw(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    req = urllib.request.Request(NEST_TS, headers={"User-Agent": "homelab-doorbell/1"})
+    with urllib.request.urlopen(req, timeout=30) as src, path.open("wb") as out:
+        deadline = time.time() + RECORD_SECONDS
+        while time.time() < deadline:
+            chunk = src.read(65536)
+            if not chunk:
+                break
+            out.write(chunk)
+    size = path.stat().st_size if path.exists() else 0
+    log.info("recorded raw %s (%s bytes)", path, size)
+    if size < MIN_BYTES:
+        raise RuntimeError(f"nest clip too small ({size} bytes)")
 
 
-def is_doorbell_item(item: dict) -> bool:
-    path = item.get("file") or item.get("path") or ""
-    return "1984/api/stream" in path or path.endswith("doorbell")
+def transcode(raw: Path, out: Path) -> None:
+    out.unlink(missing_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(raw),
+        "-an",
+        "-vf", "scale=-2:480:force_original_aspect_ratio=decrease,"
+               "pad=854:480:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "baseline",
+        "-level", "3.0",
+        "-preset", "ultrafast",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log.info("transcoded %s (%s bytes)", out, out.stat().st_size)
 
 
 def handle_chime() -> None:
@@ -106,25 +131,26 @@ def handle_chime() -> None:
             paused.append(pid)
             log.info("paused player %s", pid)
 
-    warm_stream()
-    kodi("Player.Open", {"item": {"file": STREAM_URL}})
-    deadline = time.time() + WATCH_SECONDS
-    while time.time() < deadline:
-        time.sleep(2)
-        playing = False
-        for player in active_players():
-            item = kodi("Player.GetItem", {"playerid": player["playerid"]}).get("result", {}).get("item", {})
-            if is_doorbell_item(item):
-                playing = True
+    try:
+        notify("Doorbell", "Getting camera…")
+        record_raw(RAW)
+        notify("Doorbell", "Preparing clip…")
+        transcode(RAW, CLIP)
+        log.info("opening %s", CLIP)
+        kodi("Player.Open", {"item": {"file": str(CLIP)}})
+        deadline = time.time() + WATCH_SECONDS
+        while time.time() < deadline:
+            time.sleep(2)
+            if not active_players():
                 break
-        if not playing:
-            break
-    else:
-        for player in active_players():
-            item = kodi("Player.GetItem", {"playerid": player["playerid"]}).get("result", {}).get("item", {})
-            if is_doorbell_item(item):
+        else:
+            for player in active_players():
                 kodi("Player.Stop", {"playerid": player["playerid"]})
-                log.info("stopped doorbell stream after timeout")
+    except Exception:
+        log.exception("doorbell clip failed")
+        notify("Doorbell", "Couldn't show the camera")
+    finally:
+        RAW.unlink(missing_ok=True)
 
     for pid in paused:
         try:
@@ -144,7 +170,6 @@ def is_chime(event: dict) -> bool:
 
 
 def should_handle(event: dict) -> bool:
-    # STARTED and a lone event with no thread state; skip ENDED so we don't fire twice.
     return is_chime(event) and event.get("eventThreadState") != "ENDED"
 
 

@@ -32,6 +32,9 @@ GUI_SETTINGS = {
     "services.zeroconf": "false",
     "services.esenabled": "false",
     "services.wsdiscovery": "false",
+    # Nest doorbell clips: DRMPRIME/V4L2 filter fails on this Pi ("Function not implemented").
+    "videoplayer.useprimedecoder": "false",
+    "videoplayer.useprimedecoderforhw": "false",
     # JSON-RPC over HTTP, used by the 3DS remote.
     "services.webserver": "true",
     "services.webserverport": "8080",

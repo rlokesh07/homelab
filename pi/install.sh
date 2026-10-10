@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 USER_NAME=alarcafil
 KEEP="kodi kodi-bin kodi-data kodi-repository-kodi openssh-server network-manager wpasupplicant
 bluez pipewire pipewire-pulse pipewire-alsa wireplumber libspa-0.2-bluetooth p11-kit p11-kit-modules
-rsync git curl avahi-daemon cron sudo raspi-config raspi-firmware linux-image-rpi-v8 raspberrypi-sys-mods
+rsync git curl ffmpeg avahi-daemon cron sudo raspi-config raspi-firmware linux-image-rpi-v8 raspberrypi-sys-mods
 samba sshfs"
 
 installed() {
@@ -17,7 +17,7 @@ installed() {
 
 echo "== packages"
 apt-get update -q
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q kodi rsync git curl sshfs
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q kodi rsync git curl sshfs ffmpeg
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends samba
 # shellcheck disable=SC2046,SC2086
 apt-mark manual $(installed $KEEP) >/dev/null
