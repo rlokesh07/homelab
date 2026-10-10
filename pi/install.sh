@@ -86,6 +86,38 @@ fi
 runuser -u "$USER_NAME" -- python3 kodi/configure.py
 systemctl start kodi.service
 
+echo "== nest doorbell"
+GO2RTC_VER=1.9.14
+need_go2rtc=1
+if [ -x /usr/local/bin/go2rtc ] && /usr/local/bin/go2rtc -version 2>&1 | grep -Fq "$GO2RTC_VER"; then
+    need_go2rtc=0
+fi
+if [ "$need_go2rtc" -eq 1 ]; then
+    curl -fsSL -o /usr/local/bin/go2rtc \
+        "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VER}/go2rtc_linux_arm64"
+    chmod 755 /usr/local/bin/go2rtc
+fi
+install -d -m 755 /usr/local/lib/homelab
+install -m 644 doorbell/doorbell.py /usr/local/lib/homelab/doorbell.py
+install -m 644 doorbell/write_go2rtc_config.py /usr/local/lib/homelab/write_go2rtc_config.py
+install -m 644 doorbell/go2rtc.service /etc/systemd/system/go2rtc.service
+install -m 644 doorbell/doorbell.service /etc/systemd/system/doorbell.service
+NEST_CONF="/home/$USER_NAME/.config/homelab"
+if [ -f "$NEST_CONF/google-refresh-token" ] && [ -f "$NEST_CONF/sdm-project-id" ]; then
+    runuser -u "$USER_NAME" -- env GO2RTC_CONFIG=/tmp/go2rtc.yaml \
+        python3 /usr/local/lib/homelab/write_go2rtc_config.py
+    # go2rtc runs as $USER_NAME and must be able to read its own secrets.
+    install -m 600 -o "$USER_NAME" -g "$USER_NAME" /tmp/go2rtc.yaml /etc/go2rtc.yaml
+    rm -f /tmp/go2rtc.yaml
+    systemctl daemon-reload
+    systemctl enable go2rtc.service doorbell.service
+    systemctl restart go2rtc.service
+    systemctl restart doorbell.service
+else
+    echo "Nest secrets missing in $NEST_CONF, skipped go2rtc/doorbell"
+    systemctl disable --now go2rtc.service doorbell.service 2>/dev/null || true
+fi
+
 echo "== auto-deploy from GitHub"
 install -m 755 update/homelab-update /usr/local/sbin/homelab-update
 install -m 644 update/homelab-update.service /etc/systemd/system/homelab-update.service

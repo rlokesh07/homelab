@@ -1,0 +1,17 @@
+[Unit]
+Description=go2rtc Nest doorbell restreamer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alarcafil
+Group=alarcafil
+ExecStart=/usr/local/bin/go2rtc -config /etc/go2rtc.yaml
+Restart=on-failure
+RestartSec=5
+# Idle most of the time; only uses meaningful RAM while someone is watching.
+MemoryMax=120M
+
+[Install]
+WantedBy=multi-user.target

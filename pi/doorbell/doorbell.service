@@ -1,0 +1,16 @@
+[Unit]
+Description=Nest doorbell → Kodi
+After=network-online.target kodi.service go2rtc.service
+Wants=network-online.target kodi.service go2rtc.service
+
+[Service]
+Type=simple
+User=alarcafil
+Group=alarcafil
+ExecStart=/usr/bin/python3 /usr/local/lib/homelab/doorbell.py
+Restart=on-failure
+RestartSec=5
+MemoryMax=40M
+
+[Install]
+WantedBy=multi-user.target
