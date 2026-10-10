@@ -16,16 +16,16 @@ from pathlib import Path
 
 CONF = Path.home() / ".config" / "homelab"
 # Nest battery doorbell is WebRTC H.264 + Opus at 960x1280 (portrait). Kodi on this
-# Pi can't play that live (no RTSP; HLS EOFs; portrait TS fails the DRM renderer),
-# so we record a short clip through go2rtc and re-encode to a 16:9 baseline MP4.
+# Pi can't play that live, so we show a JPEG ASAP, then a short low-res 16:9 clip.
 NEST_TS = "http://127.0.0.1:1984/api/stream.ts?src=doorbell"
-RAW = Path("/tmp/doorbell-raw.ts")
+NEST_JPEG = "http://127.0.0.1:1984/api/frame.jpeg?src=doorbell"
+SNAP = Path.home() / "doorbell.jpg"
 CLIP = Path.home() / "doorbell.mp4"
 KODI_URL = "http://127.0.0.1:8080/jsonrpc"
 KODI_USER = "kodi"
-RECORD_SECONDS = 10
-MIN_BYTES = 60_000
-WATCH_SECONDS = 90
+# Short + small = much faster on the Pi 3. Record and encode overlap via a pipe.
+RECORD_SECONDS = 5
+WATCH_SECONDS = 45
 CHIME = "sdm.devices.events.DoorbellChime.Chime"
 log = logging.getLogger("doorbell")
 
@@ -76,43 +76,70 @@ def active_players() -> list[dict]:
 
 
 def notify(title: str, message: str) -> None:
-    kodi("GUI.ShowNotification", {"title": title, "message": message, "displaytime": 8000})
+    kodi("GUI.ShowNotification", {"title": title, "message": message, "displaytime": 6000})
 
 
-def record_raw(path: Path) -> None:
+def fetch_snapshot(path: Path) -> None:
     path.unlink(missing_ok=True)
-    req = urllib.request.Request(NEST_TS, headers={"User-Agent": "homelab-doorbell/1"})
-    with urllib.request.urlopen(req, timeout=30) as src, path.open("wb") as out:
-        deadline = time.time() + RECORD_SECONDS
-        while time.time() < deadline:
-            chunk = src.read(65536)
-            if not chunk:
-                break
-            out.write(chunk)
-    size = path.stat().st_size if path.exists() else 0
-    log.info("recorded raw %s (%s bytes)", path, size)
-    if size < MIN_BYTES:
-        raise RuntimeError(f"nest clip too small ({size} bytes)")
+    req = urllib.request.Request(NEST_JPEG, headers={"User-Agent": "homelab-doorbell/1"})
+    with urllib.request.urlopen(req, timeout=20) as src, path.open("wb") as out:
+        out.write(src.read())
+    if path.stat().st_size < 1000:
+        raise RuntimeError("snapshot too small")
+    log.info("snapshot %s (%s bytes)", path, path.stat().st_size)
 
 
-def transcode(raw: Path, out: Path) -> None:
+def record_and_transcode(out: Path) -> None:
+    """Pipe Nest MPEG-TS into ffmpeg so encode overlaps with capture."""
     out.unlink(missing_ok=True)
-    cmd = [
+    ffmpeg = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(raw),
+        "-i", "pipe:0",
         "-an",
-        "-vf", "scale=-2:480:force_original_aspect_ratio=decrease,"
-               "pad=854:480:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+        "-r", "10",
+        "-vf", "scale=-2:240:force_original_aspect_ratio=decrease,"
+               "pad=426:240:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-profile:v", "baseline",
-        "-level", "3.0",
         "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-crf", "35",
         "-movflags", "+faststart",
         str(out),
     ]
-    subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    log.info("transcoded %s (%s bytes)", out, out.stat().st_size)
+    # curl exits after RECORD_SECONDS; ffmpeg finishes the encode.
+    curl = [
+        "curl", "-fsS", "--max-time", str(RECORD_SECONDS + 5),
+        "-H", "User-Agent: homelab-doorbell/1",
+        NEST_TS,
+    ]
+    log.info("recording %ss and encoding to %s", RECORD_SECONDS, out)
+    with subprocess.Popen(curl, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as src:
+        proc = subprocess.run(
+            ffmpeg,
+            stdin=src.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=90,
+            check=False,
+        )
+    if not out.exists() or out.stat().st_size < 5000:
+        raise RuntimeError(f"clip encode failed (ffmpeg exit {proc.returncode})")
+    log.info("clip ready %s (%s bytes)", out, out.stat().st_size)
+
+
+def wait_playback_end(path: Path, timeout: float) -> None:
+    deadline = time.time() + timeout
+    # Give Kodi a moment to start the item.
+    time.sleep(1)
+    while time.time() < deadline:
+        players = active_players()
+        if not players:
+            return
+        time.sleep(1)
+    for player in active_players():
+        kodi("Player.Stop", {"playerid": player["playerid"]})
 
 
 def handle_chime() -> None:
@@ -131,26 +158,36 @@ def handle_chime() -> None:
             paused.append(pid)
             log.info("paused player %s", pid)
 
+    clip_error: list[BaseException] = []
+
+    def _make_clip():
+        try:
+            record_and_transcode(CLIP)
+        except BaseException as e:
+            clip_error.append(e)
+            log.exception("clip failed")
+
+    clip_thread = threading.Thread(target=_make_clip, daemon=True)
+    clip_thread.start()
+
     try:
-        notify("Doorbell", "Getting camera…")
-        record_raw(RAW)
-        notify("Doorbell", "Preparing clip…")
-        transcode(RAW, CLIP)
-        log.info("opening %s", CLIP)
-        kodi("Player.Open", {"item": {"file": str(CLIP)}})
-        deadline = time.time() + WATCH_SECONDS
-        while time.time() < deadline:
-            time.sleep(2)
-            if not active_players():
-                break
-        else:
-            for player in active_players():
-                kodi("Player.Stop", {"playerid": player["playerid"]})
+        fetch_snapshot(SNAP)
+        log.info("showing snapshot")
+        kodi("Player.Open", {"item": {"file": str(SNAP)}})
     except Exception:
-        log.exception("doorbell clip failed")
-        notify("Doorbell", "Couldn't show the camera")
-    finally:
-        RAW.unlink(missing_ok=True)
+        log.exception("snapshot failed")
+        notify("Doorbell", "Getting camera…")
+
+    clip_thread.join(timeout=90)
+    if CLIP.exists() and CLIP.stat().st_size >= 5000 and not clip_error:
+        log.info("showing clip")
+        kodi("Player.Open", {"item": {"file": str(CLIP)}})
+        wait_playback_end(CLIP, WATCH_SECONDS)
+    elif clip_error:
+        notify("Doorbell", "Couldn't get video — showing photo only")
+        wait_playback_end(SNAP, 15)
+    else:
+        wait_playback_end(SNAP, 15)
 
     for pid in paused:
         try:
