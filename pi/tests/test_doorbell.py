@@ -42,6 +42,10 @@ class DoorbellEventTest(unittest.TestCase):
         self.assertFalse(doorbell.is_chime(doorbell.decode_event(msg)))
         self.assertFalse(doorbell.should_handle(doorbell.decode_event(msg)))
 
+    def test_chime_event_id(self):
+        msg = event([doorbell.CHIME], "STARTED")
+        self.assertEqual(doorbell.chime_event_id(doorbell.decode_event(msg)), "n:1")
+
 
 if __name__ == "__main__":
     unittest.main()

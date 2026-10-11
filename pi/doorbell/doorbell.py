@@ -6,7 +6,6 @@ import base64
 import json
 import logging
 import signal
-import subprocess
 import threading
 import time
 import urllib.error
@@ -15,18 +14,14 @@ import urllib.request
 from pathlib import Path
 
 CONF = Path.home() / ".config" / "homelab"
-# Nest battery doorbell is WebRTC H.264 + Opus at 960x1280 (portrait). Kodi on this
-# Pi can't play that live. If something is already playing we overlay a large
-# notification with the snapshot (playback continues). Otherwise fullscreen clip.
-NEST_TS = "http://127.0.0.1:1984/api/stream.ts?src=doorbell"
-NEST_JPEG = "http://127.0.0.1:1984/api/frame.jpeg?src=doorbell"
+# While a movie is playing we must NOT start Nest WebRTC via go2rtc — that starves
+# Kodi on this Pi 3 and makes the video buffer. Use CameraEventImage instead (a still
+# from the chime event, downloaded over HTTPS, no live stream).
 SNAP = Path.home() / "doorbell.jpg"
-CLIP = Path.home() / "doorbell.mp4"
 KODI_URL = "http://127.0.0.1:8080/jsonrpc"
 KODI_USER = "kodi"
-RECORD_SECONDS = 5
 PIP_SECONDS = 12
-WATCH_SECONDS = 45
+FULLSCREEN_SECONDS = 20
 CHIME = "sdm.devices.events.DoorbellChime.Chime"
 log = logging.getLogger("doorbell")
 
@@ -52,7 +47,7 @@ def google_post(url: str, body: dict, access: str) -> dict:
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=70) as r:
+    with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
 
 
@@ -96,144 +91,84 @@ def notify(title: str, message: str, image: str | None = None, displaytime: int 
     kodi("GUI.ShowNotification", params)
 
 
-def wake_nest() -> None:
-    """Battery doorbells sleep; a short TS read kicks WebRTC before we ask for a JPEG."""
-    try:
-        req = urllib.request.Request(NEST_TS, headers={"User-Agent": "homelab-doorbell/1"})
-        with urllib.request.urlopen(req, timeout=40) as src:
-            src.read(65536)
-        log.info("nest stream awake")
-    except Exception:
-        log.exception("nest wake failed; trying jpeg anyway")
+def chime_event_id(event: dict) -> str | None:
+    chime = event.get("resourceUpdate", {}).get("events", {}).get(CHIME) or {}
+    return chime.get("eventId") or None
 
 
-def fetch_snapshot(path: Path, attempts: int = 3) -> None:
+def fetch_event_image(path: Path, event_id: str, access: str) -> None:
+    """Download the Nest event still. No WebRTC / go2rtc — safe while Kodi is playing."""
     path.unlink(missing_ok=True)
-    last_error: BaseException | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            if attempt == 1:
-                wake_nest()
-            req = urllib.request.Request(NEST_JPEG, headers={"User-Agent": "homelab-doorbell/1"})
-            # Battery Nest can take 30s+ to start WebRTC when cold, especially while Kodi is playing.
-            with urllib.request.urlopen(req, timeout=55) as src, path.open("wb") as out:
-                out.write(src.read())
-            if path.stat().st_size < 1000:
-                raise RuntimeError("snapshot too small")
-            log.info("snapshot %s (%s bytes) attempt %s", path, path.stat().st_size, attempt)
-            return
-        except BaseException as e:
-            last_error = e
-            log.warning("snapshot attempt %s failed: %s", attempt, e)
-            time.sleep(2)
-    raise RuntimeError(f"snapshot failed after {attempts} tries") from last_error
+    device = read("nest-device-id")
+    project = read("sdm-project-id")
+    url = (
+        f"https://smartdevicemanagement.googleapis.com/v1/enterprises/"
+        f"{project}/devices/{device}:executeCommand"
+    )
+    result = google_post(
+        url,
+        {
+            "command": "sdm.devices.commands.CameraEventImage.GenerateImage",
+            "params": {"eventId": event_id},
+        },
+        access,
+    )["results"]
+    img_url = result["url"]
+    img_token = result["token"]
+    # Nest expects Basic auth with an empty username and the token as the password.
+    basic = base64.b64encode(f":{img_token}".encode()).decode()
+    req = urllib.request.Request(img_url, headers={"Authorization": f"Basic {basic}"})
+    with urllib.request.urlopen(req, timeout=20) as src, path.open("wb") as out:
+        out.write(src.read())
+    if path.stat().st_size < 1000:
+        raise RuntimeError("event image too small")
+    log.info("event image %s (%s bytes) eventId=%s", path, path.stat().st_size, event_id)
 
 
-def record_and_transcode(out: Path) -> None:
-    out.unlink(missing_ok=True)
-    ffmpeg = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", "pipe:0",
-        "-an",
-        "-r", "10",
-        "-vf", "scale=-2:240:force_original_aspect_ratio=decrease,"
-               "pad=426:240:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-profile:v", "baseline",
-        "-preset", "ultrafast",
-        "-tune", "zerolatency",
-        "-crf", "35",
-        "-movflags", "+faststart",
-        str(out),
-    ]
-    curl = [
-        "curl", "-fsS", "--max-time", str(RECORD_SECONDS + 5),
-        "-H", "User-Agent: homelab-doorbell/1",
-        NEST_TS,
-    ]
-    log.info("recording %ss and encoding to %s", RECORD_SECONDS, out)
-    with subprocess.Popen(curl, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as src:
-        proc = subprocess.run(
-            ffmpeg,
-            stdin=src.stdout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=90,
-            check=False,
-        )
-    if not out.exists() or out.stat().st_size < 5000:
-        raise RuntimeError(f"clip encode failed (ffmpeg exit {proc.returncode})")
-    log.info("clip ready %s (%s bytes)", out, out.stat().st_size)
-
-
-def wait_playback_end(timeout: float) -> None:
-    deadline = time.time() + timeout
-    time.sleep(1)
-    while time.time() < deadline:
-        if not active_players():
-            return
-        time.sleep(1)
-    for player in active_players():
-        kodi("Player.Stop", {"playerid": player["playerid"]})
-
-
-def handle_chime_pip() -> None:
-    """Keep current playback going; overlay a large doorbell photo notification."""
+def handle_chime_pip(event_id: str | None, access: str) -> None:
+    """Keep current playback going; overlay a doorbell photo (no live camera)."""
     log.info("doorbell chime (pip)")
-    notify("Doorbell", "Getting camera…")
+    if not event_id:
+        notify("Doorbell", "Someone's at the door")
+        return
     try:
-        fetch_snapshot(SNAP)
-        # Long displaytime — Estuary shows the image in the notification card.
+        fetch_event_image(SNAP, event_id, access)
         notify("Doorbell", "Someone's at the door", image=str(SNAP), displaytime=PIP_SECONDS * 1000)
         time.sleep(PIP_SECONDS)
     except Exception:
         log.exception("pip doorbell failed")
+        # Never fall back to go2rtc while playing — that causes buffering.
+        notify("Doorbell", "Someone's at the door")
+
+
+def handle_chime_fullscreen(event_id: str | None, access: str) -> None:
+    """Nothing else on screen — show the event still fullscreen briefly."""
+    log.info("doorbell chime (fullscreen)")
+    notify("Doorbell", "Someone's at the door")
+    if not event_id:
+        return
+    try:
+        fetch_event_image(SNAP, event_id, access)
+        log.info("showing event image")
+        kodi("Player.Open", {"item": {"file": str(SNAP)}})
+        deadline = time.time() + FULLSCREEN_SECONDS
+        time.sleep(1)
+        while time.time() < deadline and active_players():
+            time.sleep(1)
+        for player in active_players():
+            item = kodi("Player.GetItem", {"playerid": player["playerid"]}).get("result", {}).get("item", {})
+            if "doorbell" in (item.get("file") or item.get("label") or ""):
+                kodi("Player.Stop", {"playerid": player["playerid"]})
+    except Exception:
+        log.exception("fullscreen doorbell failed")
         notify("Doorbell", "Someone's at the door — camera unavailable")
 
 
-def handle_chime_fullscreen() -> None:
-    """Nothing else on screen — snapshot, then a short clip."""
-    log.info("doorbell chime (fullscreen)")
-    notify("Doorbell", "Someone's at the door")
-
-    clip_error: list[BaseException] = []
-
-    def _make_clip():
-        try:
-            record_and_transcode(CLIP)
-        except BaseException as e:
-            clip_error.append(e)
-            log.exception("clip failed")
-
-    clip_thread = threading.Thread(target=_make_clip, daemon=True)
-    clip_thread.start()
-
-    try:
-        fetch_snapshot(SNAP)
-        log.info("showing snapshot")
-        kodi("Player.Open", {"item": {"file": str(SNAP)}})
-    except Exception:
-        log.exception("snapshot failed")
-        notify("Doorbell", "Getting camera…")
-
-    clip_thread.join(timeout=90)
-    if CLIP.exists() and CLIP.stat().st_size >= 5000 and not clip_error:
-        log.info("showing clip")
-        kodi("Player.Open", {"item": {"file": str(CLIP)}})
-        wait_playback_end(WATCH_SECONDS)
-    elif clip_error:
-        notify("Doorbell", "Couldn't get video — showing photo only")
-        wait_playback_end(15)
-    else:
-        wait_playback_end(15)
-
-
-def handle_chime() -> None:
+def handle_chime(event_id: str | None, access: str) -> None:
     if something_is_playing():
-        handle_chime_pip()
+        handle_chime_pip(event_id, access)
     else:
-        handle_chime_fullscreen()
+        handle_chime_fullscreen(event_id, access)
 
 
 def decode_event(message: dict) -> dict:
@@ -280,10 +215,16 @@ def loop(stop: threading.Event) -> None:
                 access = token()
                 access_expires = time.time() + 3000
             messages = pull_once(access)
-            chime = any(should_handle(decode_event(m)) for m in messages)
+            event_id = None
+            chime = False
+            for message in messages:
+                event = decode_event(message)
+                if should_handle(event):
+                    chime = True
+                    event_id = chime_event_id(event) or event_id
             ack(access, messages)
             if chime:
-                handle_chime()
+                handle_chime(event_id, access)
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")[:300]
             log.error("http %s: %s", e.code, body)
