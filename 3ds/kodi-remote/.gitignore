@@ -1,0 +1,9 @@
+/build/
+*.elf
+*.3dsx
+*.smdh
+*.o
+*.d
+*.lst
+*.map
+kodi-remote.cfg

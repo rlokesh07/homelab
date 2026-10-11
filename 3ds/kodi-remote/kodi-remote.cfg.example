@@ -1,0 +1,7 @@
+# Copy to sdmc:/3ds/kodi-remote.cfg on the 3DS's SD card.
+# host must be an IP address; the 3DS can't resolve .local names.
+host=10.0.0.214
+port=8080
+user=kodi
+# On the Pi: cat ~/.config/homelab/kodi-web-password
+password=

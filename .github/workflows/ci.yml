@@ -31,3 +31,6 @@ jobs:
         env:
           ESTUARY_HOME: ${{ runner.temp }}/Home.xml
         run: python -m unittest discover -s pi/tests -v
+
+      - name: 3DS remote host test
+        run: sh 3ds/kodi-remote/test/run.sh
