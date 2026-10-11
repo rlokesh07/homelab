@@ -53,6 +53,21 @@ install -m 644 samba/smb.conf /etc/samba/smb.conf
 systemctl disable --now nmbd.service 2>/dev/null || true
 systemctl enable smbd.service
 systemctl restart smbd.service
+
+echo "== Ubuntu media over sshfs (/mnt/storage)"
+install -d -m 755 /mnt/storage
+FSTAB_LINE="homelab@192.168.50.1:/home/homelab/Videos /mnt/storage fuse.sshfs noauto,x-systemd.automount,_netdev,nofail,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,IdentityFile=/home/$USER_NAME/.ssh/id_ed25519,allow_other,default_permissions,uid=$(id -u "$USER_NAME"),gid=$(id -g "$USER_NAME"),cache=yes,kernel_cache,compression=no,attr_timeout=60,entry_timeout=60,negative_timeout=60 0 0"
+if grep -q '[[:space:]]/mnt/storage[[:space:]]' /etc/fstab; then
+    # shellcheck disable=SC2016
+    sed -i '\|[[:space:]]/mnt/storage[[:space:]]|d' /etc/fstab
+fi
+printf '%s\n' "$FSTAB_LINE" >> /etc/fstab
+systemctl daemon-reload
+# Remount only when nothing holds the mount; otherwise the new options apply next automount.
+if mountpoint -q /mnt/storage && ! fuser -m /mnt/storage >/dev/null 2>&1; then
+    umount /mnt/storage 2>/dev/null || umount -l /mnt/storage 2>/dev/null || true
+fi
+systemctl restart mnt-storage.automount 2>/dev/null || true
 # /mnt/storage is the Ubuntu machine over sshfs; skip if it is switched off.
 if ! timeout 20 runuser -u "$USER_NAME" -- mkdir -p /mnt/storage/Movies "/mnt/storage/TV Shows"; then
     echo "storage not reachable, skipped creating Movies and TV Shows folders"
@@ -110,11 +125,12 @@ if [ -f "$NEST_CONF/google-refresh-token" ] && [ -f "$NEST_CONF/sdm-project-id" 
     install -m 600 -o "$USER_NAME" -g "$USER_NAME" /tmp/go2rtc.yaml /etc/go2rtc.yaml
     rm -f /tmp/go2rtc.yaml
     systemctl daemon-reload
-    systemctl enable go2rtc.service doorbell.service
-    systemctl restart go2rtc.service
+    # Event stills only — live WebRTC via go2rtc starves Kodi on the Pi 3.
+    systemctl disable --now go2rtc.service 2>/dev/null || true
+    systemctl enable doorbell.service
     systemctl restart doorbell.service
 else
-    echo "Nest secrets missing in $NEST_CONF, skipped go2rtc/doorbell"
+    echo "Nest secrets missing in $NEST_CONF, skipped doorbell"
     systemctl disable --now go2rtc.service doorbell.service 2>/dev/null || true
 fi
 

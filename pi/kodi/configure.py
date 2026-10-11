@@ -35,6 +35,12 @@ GUI_SETTINGS = {
     # Nest doorbell clips: DRMPRIME/V4L2 filter fails on this Pi ("Function not implemented").
     "videoplayer.useprimedecoder": "false",
     "videoplayer.useprimedecoderforhw": "false",
+    # /mnt/storage is fuse.sshfs — Kodi treats it as a local path, so NETWORK buffer mode
+    # skips it. ALL + a bigger RAM cache absorbs sshfs jitter on the Pi 3.
+    "filecache.buffermode": "1",  # CacheBufferMode::ALL
+    "filecache.memorysize": "96",  # MB
+    "filecache.readfactor": "400",
+    "filecache.chunksize": "262144",  # 256 KB
     # JSON-RPC over HTTP, used by the 3DS remote.
     "services.webserver": "true",
     "services.webserverport": "8080",
