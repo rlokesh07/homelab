@@ -96,14 +96,37 @@ def notify(title: str, message: str, image: str | None = None, displaytime: int 
     kodi("GUI.ShowNotification", params)
 
 
-def fetch_snapshot(path: Path) -> None:
+def wake_nest() -> None:
+    """Battery doorbells sleep; a short TS read kicks WebRTC before we ask for a JPEG."""
+    try:
+        req = urllib.request.Request(NEST_TS, headers={"User-Agent": "homelab-doorbell/1"})
+        with urllib.request.urlopen(req, timeout=40) as src:
+            src.read(65536)
+        log.info("nest stream awake")
+    except Exception:
+        log.exception("nest wake failed; trying jpeg anyway")
+
+
+def fetch_snapshot(path: Path, attempts: int = 3) -> None:
     path.unlink(missing_ok=True)
-    req = urllib.request.Request(NEST_JPEG, headers={"User-Agent": "homelab-doorbell/1"})
-    with urllib.request.urlopen(req, timeout=25) as src, path.open("wb") as out:
-        out.write(src.read())
-    if path.stat().st_size < 1000:
-        raise RuntimeError("snapshot too small")
-    log.info("snapshot %s (%s bytes)", path, path.stat().st_size)
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if attempt == 1:
+                wake_nest()
+            req = urllib.request.Request(NEST_JPEG, headers={"User-Agent": "homelab-doorbell/1"})
+            # Battery Nest can take 30s+ to start WebRTC when cold, especially while Kodi is playing.
+            with urllib.request.urlopen(req, timeout=55) as src, path.open("wb") as out:
+                out.write(src.read())
+            if path.stat().st_size < 1000:
+                raise RuntimeError("snapshot too small")
+            log.info("snapshot %s (%s bytes) attempt %s", path, path.stat().st_size, attempt)
+            return
+        except BaseException as e:
+            last_error = e
+            log.warning("snapshot attempt %s failed: %s", attempt, e)
+            time.sleep(2)
+    raise RuntimeError(f"snapshot failed after {attempts} tries") from last_error
 
 
 def record_and_transcode(out: Path) -> None:
@@ -158,6 +181,7 @@ def wait_playback_end(timeout: float) -> None:
 def handle_chime_pip() -> None:
     """Keep current playback going; overlay a large doorbell photo notification."""
     log.info("doorbell chime (pip)")
+    notify("Doorbell", "Getting camera…")
     try:
         fetch_snapshot(SNAP)
         # Long displaytime — Estuary shows the image in the notification card.
