@@ -46,6 +46,11 @@ class DoorbellEventTest(unittest.TestCase):
         msg = event([doorbell.CHIME], "STARTED")
         self.assertEqual(doorbell.chime_event_id(doorbell.decode_event(msg)), "n:1")
 
+    def test_archive_path_uses_timestamp(self):
+        path = doorbell.archive_path(when=0)  # 1969/1970 local — just check shape
+        self.assertTrue(path.name.endswith(".jpg"))
+        self.assertEqual(path.parent, doorbell.ARCHIVE)
+
 
 if __name__ == "__main__":
     unittest.main()

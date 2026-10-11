@@ -69,8 +69,8 @@ if mountpoint -q /mnt/storage && ! fuser -m /mnt/storage >/dev/null 2>&1; then
 fi
 systemctl restart mnt-storage.automount 2>/dev/null || true
 # /mnt/storage is the Ubuntu machine over sshfs; skip if it is switched off.
-if ! timeout 20 runuser -u "$USER_NAME" -- mkdir -p /mnt/storage/Movies "/mnt/storage/TV Shows"; then
-    echo "storage not reachable, skipped creating Movies and TV Shows folders"
+if ! timeout 20 runuser -u "$USER_NAME" -- mkdir -p /mnt/storage/Movies "/mnt/storage/TV Shows" /mnt/storage/Doorbell; then
+    echo "storage not reachable, skipped creating Movies / TV Shows / Doorbell folders"
 fi
 
 echo "== 3ds audio"

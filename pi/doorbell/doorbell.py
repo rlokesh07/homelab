@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import shutil
 import signal
 import threading
 import time
@@ -18,6 +19,8 @@ CONF = Path.home() / ".config" / "homelab"
 # Kodi on this Pi 3 and makes the video buffer. Use CameraEventImage instead (a still
 # from the chime event, downloaded over HTTPS, no live stream).
 SNAP = Path.home() / "doorbell.jpg"
+# Permanent copies for the Kodi "Doorbell" pictures tab (Ubuntu media over sshfs).
+ARCHIVE = Path("/mnt/storage/Doorbell")
 KODI_URL = "http://127.0.0.1:8080/jsonrpc"
 KODI_USER = "kodi"
 PIP_SECONDS = 12
@@ -96,6 +99,30 @@ def chime_event_id(event: dict) -> str | None:
     return chime.get("eventId") or None
 
 
+def archive_path(when: float | None = None) -> Path:
+    """Filename for a kept doorbell still: 2026-10-10_212530.jpg"""
+    stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime(when or time.time()))
+    dest = ARCHIVE / f"{stamp}.jpg"
+    n = 1
+    while dest.exists():
+        dest = ARCHIVE / f"{stamp}_{n}.jpg"
+        n += 1
+    return dest
+
+
+def archive_snap(snap: Path) -> Path | None:
+    """Copy the latest still into /mnt/storage/Doorbell for the Kodi tab."""
+    try:
+        ARCHIVE.mkdir(parents=True, exist_ok=True)
+        dest = archive_path()
+        shutil.copy2(snap, dest)
+        log.info("archived doorbell photo %s", dest)
+        return dest
+    except Exception:
+        log.exception("could not archive doorbell photo to %s", ARCHIVE)
+        return None
+
+
 def fetch_event_image(path: Path, event_id: str, access: str) -> None:
     """Download the Nest event still. No WebRTC / go2rtc — safe while Kodi is playing."""
     path.unlink(missing_ok=True)
@@ -123,6 +150,7 @@ def fetch_event_image(path: Path, event_id: str, access: str) -> None:
     if path.stat().st_size < 1000:
         raise RuntimeError("event image too small")
     log.info("event image %s (%s bytes) eventId=%s", path, path.stat().st_size, event_id)
+    archive_snap(path)
 
 
 def handle_chime_pip(event_id: str | None, access: str) -> None:

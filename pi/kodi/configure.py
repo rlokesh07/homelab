@@ -12,10 +12,11 @@ USERDATA = KODI / "userdata"
 SYSTEM_SKIN = Path("/usr/share/kodi/addons/skin.estuary")
 SKIN_ID = "skin.estuary.tv"
 SKIN_DIR = KODI / "addons" / SKIN_ID
-KEEP_MENU = {"movies", "tvshows"}
+KEEP_MENU = {"movies", "tvshows", "pictures"}
 
 USB_DRIVE = "/srv/media"
 STORAGE = "/mnt/storage"
+DOORBELL_PHOTOS = f"{STORAGE}/Doorbell/"
 MOVIES = ("movies", "metadata.themoviedb.org.python", 2147483647)
 TV_SHOWS = ("tvshows", "metadata.tvshows.themoviedb.org.python", 0)
 SOURCES = {
@@ -23,6 +24,9 @@ SOURCES = {
     "TV Shows": (f"{USB_DRIVE}/TV Shows/", *TV_SHOWS),
     "Movies (storage)": (f"{STORAGE}/Movies/", *MOVIES),
     "TV Shows (storage)": (f"{STORAGE}/TV Shows/", *TV_SHOWS),
+}
+PICTURE_SOURCES = {
+    "Doorbell": DOORBELL_PHOTOS,
 }
 
 GUI_SETTINGS = {
@@ -74,6 +78,7 @@ def build_skin():
     home_xml = SKIN_DIR / "xml" / "Home.xml"
     tree = ET.parse(home_xml)
     trim_home(tree)
+    label_doorbell_tab(tree)
     tree.write(home_xml, encoding="UTF-8", xml_declaration=True)
 
     # Bigger notification card so doorbell snapshots can sit over playing video.
@@ -98,6 +103,29 @@ def trim_home(tree):
         match = MENU_ITEM_ID.fullmatch((visible.text or "").strip()) if visible is not None else None
         if match and match.group(1) not in KEEP_MENU and group in parents:
             parents[group].remove(group)
+
+
+def label_doorbell_tab(tree):
+    """Rename the Pictures home item to Doorbell and open the archive folder."""
+    menu = tree.find(".//control[@id='9000']/content")
+    for item in menu:
+        prop = item.find("property[@name='id']")
+        if prop is None or prop.text != "pictures":
+            continue
+        label = item.find("label")
+        if label is not None:
+            label.text = "Doorbell"
+        for onclick in list(item.findall("onclick")):
+            item.remove(onclick)
+        onclick = ET.Element("onclick")
+        onclick.text = f"ActivateWindow(Pictures,{DOORBELL_PHOTOS},return)"
+        # Keep onclick next to label like the stock skin.
+        label_el = item.find("label")
+        if label_el is not None:
+            idx = list(item).index(label_el) + 1
+            item.insert(idx, onclick)
+        else:
+            item.insert(0, onclick)
 
 
 def web_password(path=WEB_PASSWORD):
@@ -126,6 +154,13 @@ def write_sources():
     ET.SubElement(video, "default", pathversion="1")
     for name, (path, *_rest) in SOURCES.items():
         source = ET.SubElement(video, "source")
+        ET.SubElement(source, "name").text = name
+        ET.SubElement(source, "path", pathversion="1").text = path
+        ET.SubElement(source, "allowsharing").text = "true"
+    pictures = ET.SubElement(root, "pictures")
+    ET.SubElement(pictures, "default", pathversion="1")
+    for name, path in PICTURE_SOURCES.items():
+        source = ET.SubElement(pictures, "source")
         ET.SubElement(source, "name").text = name
         ET.SubElement(source, "path", pathversion="1").text = path
         ET.SubElement(source, "allowsharing").text = "true"

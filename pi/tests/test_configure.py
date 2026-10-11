@@ -18,10 +18,10 @@ class TrimHomeTest(unittest.TestCase):
         self.tree = ET.parse(ESTUARY_HOME)
         configure.trim_home(self.tree)
 
-    def test_menu_only_has_movies_and_tv_shows(self):
+    def test_menu_only_has_movies_tv_and_doorbell(self):
         menu = self.tree.find(".//control[@id='9000']/content")
         ids = [item.find("property[@name='id']").text for item in menu]
-        self.assertEqual(ids, ["movies", "tvshows"])
+        self.assertEqual(ids, ["movies", "tvshows", "pictures"])
 
     def test_panels_for_removed_entries_are_gone(self):
         shown_for = set()
@@ -29,11 +29,27 @@ class TrimHomeTest(unittest.TestCase):
             match = configure.MENU_ITEM_ID.fullmatch((visible.text or "").strip())
             if match:
                 shown_for.add(match.group(1))
-        self.assertEqual(shown_for, {"movies", "tvshows"})
+        self.assertEqual(shown_for, {"movies", "tvshows", "pictures"})
 
     def test_untrimmed_file_has_other_entries(self):
         text = Path(ESTUARY_HOME).read_text()
         self.assertTrue({"music", "pictures", "weather"} <= set(re.findall(r'"id">(\w+)<', text)))
+
+
+@unittest.skipUnless(ESTUARY_HOME, "set ESTUARY_HOME to Estuary's xml/Home.xml")
+class DoorbellTabTest(unittest.TestCase):
+    def test_pictures_tab_renamed_and_opens_archive(self):
+        tree = ET.parse(ESTUARY_HOME)
+        configure.trim_home(tree)
+        configure.label_doorbell_tab(tree)
+        menu = tree.find(".//control[@id='9000']/content")
+        pictures = next(
+            item for item in menu if item.find("property[@name='id']").text == "pictures"
+        )
+        self.assertEqual(pictures.find("label").text, "Doorbell")
+        onclick = pictures.find("onclick").text
+        self.assertIn(configure.DOORBELL_PHOTOS, onclick)
+        self.assertTrue(onclick.startswith("ActivateWindow(Pictures,"))
 
 
 class GuiSettingsTest(unittest.TestCase):
